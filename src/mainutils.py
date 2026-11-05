@@ -1,0 +1,915 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+
+import os
+import sys
+import pwd
+import shutil
+import pathlib
+
+from typing import (
+    Callable,
+    Optional,
+    List,
+    Union,
+    Any,
+)
+
+
+from corenodep import (
+    parse_version,
+)
+
+from coreutils import (
+    exit_with_message,
+    save_conf_setting,
+    load_conf_setting,
+    cache,
+    log,
+    http_get,
+)
+
+if getattr(sys, "frozen", False):
+    SCRIPT_IMP_FILE = os.path.realpath(sys.executable)
+else:
+    SCRIPT_IMP_FILE = os.path.realpath(__file__)
+SCRIPT_PATH = os.path.dirname(SCRIPT_IMP_FILE)
+
+
+# Get the GitHub releases from "USERNAME/REPO"
+def get_github_releases(repo_name: str) -> List[Any]:
+    url = f"https://api.github.com/repos/{repo_name}/releases"
+    try:
+        response = http_get(url)
+    except Exception as e:
+        log(f"Failed to fetch releases:\n{e}")
+        return []
+    if response.status_code == 200:
+        releases = response.json()
+        return releases
+    else:
+        log(
+            f"Failed to grab the GitHub releases from '{url}'.\nTo fix this, try deleting the config file"
+        )
+        return []
+
+
+# Find the version w.x in the releases best compatible with version y.z
+def find_closest_compatible_release(
+    releases: list,
+    current_version_parts: List[Union[int, None]] = [None, None],
+) -> List[Union[Optional[List[int]], Optional[str]]]:
+    closest_release = None
+    closest_version = None
+    closest_release_url = None
+    priority = 6
+
+    for release in releases:
+        tag_name = release.get("tag_name")
+        if tag_name and tag_name.startswith("PfxVer"):
+            release_version_parts = parse_version(tag_name)
+            if release_version_parts and current_version_parts:
+                if (
+                    release_version_parts[0] == current_version_parts[0]
+                    and release_version_parts[1] == current_version_parts[1]
+                ):
+                    # Exact match
+                    closest_release = release
+                    closest_version = release_version_parts
+                    closest_release_url = release["assets"][0][
+                        "browser_download_url"
+                    ]
+                    break
+                elif (
+                    release_version_parts[0] == current_version_parts[0]
+                    and release_version_parts[1] < current_version_parts[1]
+                ):
+                    # Same major, lower minor version
+                    if priority > 2 or (
+                        priority == 2
+                        and (
+                            not closest_release
+                            or release_version_parts[1] > closest_version[1]
+                        )
+                    ):
+                        priority = 2
+                        closest_release = release
+                        closest_version = release_version_parts
+                        closest_release_url = release["assets"][0][
+                            "browser_download_url"
+                        ]
+                elif (
+                    release_version_parts[0] == current_version_parts[0]
+                    and release_version_parts[1] > current_version_parts[1]
+                ):
+                    # Same major, higher minor version
+                    if priority > 3 or (
+                        priority == 3
+                        and (
+                            not closest_release
+                            or release_version_parts[1] < closest_version[1]
+                        )
+                    ):
+                        priority = 3
+                        closest_release = release
+                        closest_version = release_version_parts
+                        closest_release_url = release["assets"][0][
+                            "browser_download_url"
+                        ]
+                elif release_version_parts[0] < current_version_parts[0]:
+                    # Lower major version
+                    if priority > 4 or (
+                        priority == 4
+                        and (
+                            not closest_release
+                            or release_version_parts[0] > closest_version[0]
+                            or (
+                                release_version_parts[0] == closest_version[0]
+                                and release_version_parts[1]
+                                > closest_version[1]
+                            )
+                        )
+                    ):
+                        priority = 4
+                        closest_release = release
+                        closest_version = release_version_parts
+                        closest_release_url = release["assets"][0][
+                            "browser_download_url"
+                        ]
+                elif release_version_parts[0] > current_version_parts[0]:
+                    # Higher major version
+                    if priority > 5 or (
+                        priority == 5
+                        and (
+                            not closest_release
+                            or release_version_parts[0] < closest_version[0]
+                            or (
+                                release_version_parts[0] == closest_version[0]
+                                and release_version_parts[1]
+                                < closest_version[1]
+                            )
+                        )
+                    ):
+                        priority = 5
+                        closest_release = release
+                        closest_version = release_version_parts
+                        closest_release_url = release["assets"][0][
+                            "browser_download_url"
+                        ]
+
+    return closest_version, closest_release_url
+
+
+# Function to execute a command and display output in a popup
+def popup_execute(
+    title: str, command: str, onwrite: Optional[Callable[[str], None]] = None
+) -> int:
+    import FreeSimpleGUI as sg
+    import subprocess as sp
+
+    sg.theme("systemdefault")
+
+    text_str = [""]
+    text = sg.Multiline("", disabled=True, autoscroll=True, size=(80, 30))
+    layout = [[text]]
+    window = sg.Window(title, layout, finalize=True)
+    exitcode = [-1]
+
+    def process_func() -> None:
+        process = sp.Popen(command, stdout=sp.PIPE, shell=True)
+        for line in iter(process.stdout.readline, ""):
+            if line is None or line == b"":
+                break
+            s_line = line.decode("utf8")
+            log(s_line)
+            text_str[0] = text_str[0] + s_line + "\n"
+            if onwrite is not None:
+                onwrite(s_line)
+        exitcode[0] = process.wait()
+
+    window.perform_long_operation(process_func, "-PROCESS COMPLETE-")
+
+    while True:
+        event, values = window.read(timeout=1000)
+        if event == "-PROCESS COMPLETE-":
+            break
+        elif event is None:
+            exit_with_message(
+                "Window Closed",
+                "The window was closed. Exiting...",
+                timeout=5,
+            )
+        else:
+            if len(text_str[0]) < 1:
+                continue
+            text.update(text_str[0])
+
+    window.close()
+    return exitcode[0]
+
+
+# Function to handle download progress
+def download_progress(
+    link: str, file_name: str, set_progress: Callable[[int, int], None]
+) -> None:
+    with open(file_name, "wb") as f:
+        response = http_get(link, stream=True)
+        total_length = response.headers.get("content-length")
+
+        dl = 0
+        if total_length is not None:
+            total_length = int(total_length)
+        else:
+            total_length = 0
+        for data in response.iter_content(chunk_size=4096):
+            dl += len(data)
+            f.write(data)
+            if set_progress is not None:
+                set_progress(dl, total_length if total_length else dl)
+
+
+# Function to download a file with progress display
+def popup_download(title: str, link: str, file_name: str) -> str:
+    import FreeSimpleGUI as sg
+
+    def format_size(bytes_val: float) -> str:
+        """Format bytes to human readable string."""
+        for unit in ["B", "KB", "MB", "GB"]:
+            if bytes_val < 1024:
+                return f"{bytes_val:.1f} {unit}"
+            bytes_val /= 1024
+        return f"{bytes_val:.1f} TB"
+
+    sg.theme("systemdefault")
+
+    status = [0, 0]
+
+    cache = os.path.join(SCRIPT_PATH, ".cache")
+    if not os.path.isdir(cache):
+        os.makedirs(cache)
+
+    progress = sg.ProgressBar(100, orientation="h", s=(50, 10))
+    text = sg.Text("0%", size=(30, 1))
+    layout = [[progress], [text]]
+    window = sg.Window(title, layout, finalize=True)
+
+    def update_status(status: list[int], dl: int, total: int) -> None:
+        status[0] = dl
+        status[1] = total
+
+    file_path_end = os.path.join(cache, file_name)
+    file_path = os.path.join(cache, "." + file_name)
+    if os.path.isfile(file_path):
+        os.remove(file_path)
+
+    # Track worker errors so a failed download doesn't hang the window
+    errors: List[Exception] = []
+
+    def download_worker() -> None:
+        try:
+            download_progress(
+                link,
+                file_path,
+                lambda dl, total: update_status(status, dl, total),
+            )
+        except Exception as e:
+            errors.append(e)
+
+    window.perform_long_operation(download_worker, "-DL COMPLETE-")
+
+    while True:
+        event, values = window.read(timeout=100)
+        if event == "-DL COMPLETE-":
+            break
+        elif event is None:
+            exit_with_message(
+                "Window Closed",
+                "The window was closed. Exiting...",
+                timeout=5,
+            )
+        else:
+            dl, total = status
+            perc = int(100 * (dl / total)) if total > 0 else 0
+            text.update(f"{perc}% ({format_size(dl)} / {format_size(total)})")
+            progress.update(perc)
+
+    window.close()
+
+    if errors:
+        exit_with_message(
+            "Download Failed",
+            f"Failed to download '{file_name}': {errors[0]}",
+            ask_for_log=True,
+        )
+
+    os.rename(file_path, file_path_end)
+    return file_path_end
+
+
+# Function to get or download .NET Framework 4.8
+def get_dotnet48() -> str:
+    # Newer if you like to test: "https://download.visualstudio.microsoft.com/download/pr/2d6bb6b2-226a-4baa-bdec-798822606ff1/8494001c276a4b96804cde7829c04d7f/ndp48-x86-x64-allos-enu.exe"
+    LINK = "https://download.visualstudio.microsoft.com/download/pr/7afca223-55d2-470a-8edc-6a1739ae3252/abd170b4b0ec15ad0222a809b761a036/ndp48-x86-x64-allos-enu."
+    cache_func = lambda FILE: popup_download(
+        "Downloading dotnet48", LINK, FILE
+    )
+
+    dotnet48 = cache("ndp48-x86-x64-allos-enu.exe", cache_func, True)
+    return dotnet48
+
+
+# Function to turn syslinks into files
+def deref(path: str) -> None:
+    import FreeSimpleGUI as sg
+
+    def dereference_links() -> None:
+        links = find_symlinks(path)
+        total_links = len(links)
+        extra.update("De-referencing links, please be patient...")
+        for i, link in enumerate(links):
+            target, src = link
+            try:
+                if os.path.exists(src):
+                    with open(src, "rb") as src_file:
+                        data = src_file.read()
+                    os.remove(target)
+                    with open(target, "wb") as target_file:
+                        target_file.write(data)
+                else:
+                    os.remove(target)  # Remove the broken link
+            except Exception as e:
+                log(f"Failed to de-reference {target}: {e}")
+            update_progress(int((i + 1) / total_links * 100))
+
+    def find_symlinks(path: str) -> List[List[str]]:
+        links = []
+        directory = pathlib.Path(path)
+        for item in directory.rglob("*"):
+            if item.is_symlink():
+                target = str(item)
+                src = os.readlink(target)
+                links.append([target, src])
+        return links
+
+    def update_progress(percentage: int) -> None:
+        progress.update(percentage)
+        text.update(f"{percentage}%")
+        window.refresh()
+
+    sg.theme("systemdefault")
+
+    progress = sg.ProgressBar(100, orientation="h", size=(50, 10))
+    text = sg.Text("0%")
+    extra = sg.Text("Reading directory, please wait...")
+    layout = [[extra], [progress], [text]]
+    window = sg.Window("De-referencing Links", layout, finalize=True)
+    window.refresh()
+
+    window.perform_long_operation(dereference_links, "-DEREF DONE-")
+
+    while True:
+        event, values = window.read(timeout=1000)
+        if event == "-DEREF DONE-":
+            break
+        elif event is None:
+            exit_with_message(
+                "Window Closed",
+                "The window was closed. Exiting...",
+                timeout=5,
+            )
+
+    window.close()
+
+
+# Function to copy a folder from a to b, with an ignore and allow (has priority) list
+def copy_folder_with_progress(
+    source: str,
+    dest: str,
+    zipup: bool = False,
+    ignore: Optional[List[Union[None, str]]] = None,
+    include_override: Optional[List[Union[None, str]]] = None,
+) -> None:
+    import zipfile
+    import FreeSimpleGUI as sg
+
+    if not ignore:
+        ignore = []
+
+    if not include_override:
+        include_override = []
+
+    if None in ignore:
+        ignore.remove(None)
+        ignore = list(ignore) + [
+            "pfx/drive_c/users",
+            "pfx/dosdevices",
+            "pfx/drive_c/Program Files (x86)",
+            "pfx/drive_c/Program Files",
+            "pfx/drive_c/ProgramData",
+            "drive_c/openxr",
+            "pfx/drive_c/vrclient",
+            "version",
+            "config_info",
+        ]
+
+    if None in include_override:
+        include_override.remove(None)
+        include_override = list(include_override) + [
+            "pfx/drive_c/ProgramData/Microsoft",
+            "pfx/drive_c/Program Files (x86)/Microsoft.NET",
+            "pfx/drive_c/Program Files (x86)/Windows NT",
+            "pfx/drive_c/Program Files (x86)/Common Files",
+            "pfx/drive_c/Program Files/Common Files",
+            "pfx/drive_c/Program Files/Common Files",
+            "pfx/drive_c/Program Files/Windows NT",
+        ]
+
+    log(f"ignoring: {ignore}\nincluding anyway: {include_override}")
+
+    # Thread-safe status: [current, total, phase]
+    # phase: 0 = scanning, 1 = copying/zipping
+    status = [0, 0, 0]
+
+    def traverse_folders(path: str) -> List[str]:
+        allf = []
+        directory = pathlib.Path(path)
+        for item in directory.rglob("*"):
+            if item.is_file():
+                allf.append(item)
+        return allf
+
+    def update_status(current: int, total: int, phase: int) -> None:
+        status[0] = current
+        status[1] = total
+        status[2] = phase
+
+    # Track worker errors so a failed copy doesn't hang the window
+    errors: List[Exception] = []
+
+    def copy_files() -> None:
+        try:
+            files = traverse_folders(source)
+            copy = []
+            for f in files:
+                rfile = os.path.relpath(
+                    f, source
+                )  # get file path relative to source
+                use = True  # by default, use the file
+
+                # Check if the file is in one of the dirs to ignore
+                for i in ignore:
+                    if os.path.commonprefix([rfile, i]) == i:
+                        use = False  # don't use the file if it's in an ignore directory
+                        break  # break out of the ignore loop
+
+                # If the file is not in any ignored directory, check if it's in one of the dirs to include
+                if not use:
+                    for i in include_override:
+                        if os.path.commonprefix([rfile, i]) == i:
+                            use = True  # use the file if it's in an include_override directory
+                            break  # break out of the include_override loop
+                if use:
+                    copy.append(rfile)
+
+            total_files = len(copy)
+            update_status(0, total_files, 1)
+
+            if zipup:
+                with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zipf:
+                    for i, f in enumerate(copy):
+                        arcname = f
+                        zipf.write(os.path.join(source, f), arcname)
+                        update_status(i + 1, total_files, 1)
+            else:
+                for i, f in enumerate(copy):
+                    src_path = os.path.join(source, f)
+                    dest_path = os.path.join(dest, f)
+                    try:
+                        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                        shutil.copy2(
+                            src_path, dest_path, follow_symlinks=False
+                        )
+                        update_status(i + 1, total_files, 1)
+                    except Exception as e:
+                        log(f"Failed to copy {src_path} to {dest_path}: {e}")
+        except Exception as e:
+            errors.append(e)
+
+    sg.theme("systemdefault")
+
+    progress = sg.ProgressBar(100, orientation="h", s=(50, 10))
+    text = sg.Text("0% (0/?)", size=(20, 1))
+    extra = sg.Text("Reading directory, please wait...")
+    layout = [[extra], [progress], [text]]
+
+    if zipup:
+        window = sg.Window("Zipping Prefix", layout, finalize=True)
+    else:
+        window = sg.Window("Copying Prefix", layout, finalize=True)
+
+    window.refresh()
+    window.perform_long_operation(copy_files, "-COPY DONE-")
+
+    last_phase = 0
+    while True:
+        event, values = window.read(timeout=100)
+        if event == "-COPY DONE-":
+            break
+        elif event is None:
+            exit_with_message(
+                "Window Closed",
+                "The window was closed. Exiting...",
+                timeout=5,
+            )
+        else:
+            current, total, phase = status
+            if phase == 1 and total > 0:
+                # Only update the status text on the 0 -> 1 phase change
+                if phase != last_phase:
+                    if zipup:
+                        extra.update("Zipping files, please be patient...")
+                    else:
+                        extra.update("Copying files, please be patient...")
+                    last_phase = phase
+                perc = int(100 * current / total)
+                text.update(f"{perc}% ({current}/{total} files)")
+                progress.update(perc)
+
+    window.close()
+
+    if errors:
+        exit_with_message(
+            "Copy Failed",
+            f"Failed to copy '{source}' to '{dest}': {errors[0]}",
+            ask_for_log=True,
+        )
+
+
+def unpack_zip_with_progress(zip_path: str, dest_path: str) -> None:
+    import zipfile
+    import subprocess
+    import FreeSimpleGUI as sg
+
+    # Track errors during extraction
+    extraction_errors = []
+    # Fatal worker error (e.g. the zip couldn't be opened at all)
+    fatal_error = []
+    critical_files = ["pfx/.wemod_installer", "version"]
+
+    # Thread-safe status: [current, total, phase]
+    # phase: 0 = reading zip, 1 = extracting
+    status = [0, 0, 0]
+
+    def update_status(current: int, total: int, phase: int) -> None:
+        status[0] = current
+        status[1] = total
+        status[2] = phase
+
+    def unpack_files() -> None:
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                files = zip_ref.namelist()
+                total_files = len(files)
+                update_status(0, total_files, 1)
+
+                for i, file in enumerate(files):
+                    full_file = os.path.join(dest_path, file)
+                    try:  # try to create folder if missing
+                        if len(
+                            os.path.dirname(full_file)
+                        ) > 0 and not os.path.isdir(
+                            os.path.dirname(full_file)
+                        ):
+                            os.makedirs(
+                                os.path.dirname(full_file), exist_ok=True
+                            )
+                    except Exception as e:
+                        error_msg = f"failed to make dir '{os.path.dirname(full_file)}': {e}"
+                        log(error_msg)
+                        extraction_errors.append(error_msg)
+                    try:  # try to delete old file
+                        if os.path.isfile(full_file) or os.path.islink(
+                            full_file
+                        ):
+                            os.remove(full_file)
+                    except Exception as e:
+                        error_msg = (
+                            f"failed to remove file '{full_file}': {e}"
+                        )
+                        log(error_msg)
+                        extraction_errors.append(error_msg)
+                    try:
+                        zip_ref.extract(file, dest_path)
+                    except Exception as e:
+                        error_msg = f"Failed to extract '{file}' to '{dest_path}': {e}"
+                        log(error_msg)
+                        extraction_errors.append(error_msg)
+                        # If this is a critical file, track it separately
+                        if file in critical_files:
+                            log(
+                                f"CRITICAL: Failed to extract required file '{file}'"
+                            )
+
+                    update_status(i + 1, total_files, 1)
+        except Exception as e:
+            log(f"failed to unpack '{zip_path}': {e}")
+            fatal_error.append(str(e))
+
+    sg.theme("systemdefault")
+
+    progress = sg.ProgressBar(100, orientation="h", s=(50, 10))
+    text = sg.Text("0% (0/?)", size=(20, 1))
+    extra = sg.Text("Reading ZIP file, please wait...")
+    layout = [[extra], [progress], [text]]
+    window = sg.Window("Unpacking Prefix", layout, finalize=True)
+    window.refresh()
+
+    window.perform_long_operation(unpack_files, "-UNPACK DONE-")
+
+    last_phase = 0
+    while True:
+        event, values = window.read(timeout=100)
+        if event == "-UNPACK DONE-":
+            break
+        elif event is None:
+            exit_with_message(
+                "Window Closed",
+                "The window was closed. Exiting...",
+                timeout=5,
+            )
+        else:
+            current, total, phase = status
+            if phase == 1 and total > 0:
+                # Only update the status text on the 0 -> 1 phase change
+                if phase != last_phase:
+                    extra.update("Extracting files, please be patient...")
+                    last_phase = phase
+                perc = int(100 * current / total)
+                text.update(f"{perc}% ({current}/{total} files)")
+                progress.update(perc)
+
+    window.close()
+
+    # Surface a fatal worker error (e.g. the zip couldn't be opened)
+    if fatal_error:
+        exit_with_message(
+            "Unpack Failed",
+            f"Failed to unpack '{zip_path}': {fatal_error[0]}",
+            ask_for_log=True,
+        )
+
+    # Fix permissions after unpacking
+    myuser = None
+    try:
+        myuser = os.getlogin()
+    except Exception as e:
+        pass
+    if not myuser:
+        try:
+            myuser = pwd.getpwuid(os.getuid()).pw_name
+        except Exception as e:
+            pass
+    if not myuser:
+        myuser = "steamuser"
+
+    # Only try chmod (not chown which requires sudo)
+    try:
+        subprocess.run(
+            ["chmod", "-R", "u+rw", dest_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        log(f"Set read/write permissions on '{dest_path}'")
+    except Exception as e:
+        log(f"failed to set permissions on '{dest_path}': {str(e)}")
+
+    # Check for critical extraction errors
+    if extraction_errors:
+        log(f"Encountered {len(extraction_errors)} errors during extraction")
+        # Check if critical files failed to extract
+        critical_failures = [
+            err
+            for err in extraction_errors
+            if any(cf in err for cf in critical_files)
+        ]
+        if critical_failures:
+            error_summary = "\n".join(
+                critical_failures[:5]
+            )  # Show first 5 errors
+            raise Exception(
+                f"Failed to extract critical files:\n{error_summary}"
+            )
+
+
+def copytree_with_progress(
+    source: str, dest: str, title: str = "Copying Files"
+) -> None:
+    """Copy a directory tree with a GUI progress bar (copytree semantics)."""
+    import FreeSimpleGUI as sg
+
+    # Thread-safe status: [current, total, phase]
+    # phase: 0 = scanning, 1 = copying
+    status = [0, 0, 0]
+
+    def update_status(current: int, total: int, phase: int) -> None:
+        status[0] = current
+        status[1] = total
+        status[2] = phase
+
+    # Track worker errors so a failed copy doesn't hang the window
+    errors: List[Exception] = []
+
+    def copy_tree() -> None:
+        try:
+            # First, count all files
+            files_to_copy = []
+            source_path = pathlib.Path(source)
+            for item in source_path.rglob("*"):
+                if item.is_file():
+                    files_to_copy.append(item)
+
+            total_files = len(files_to_copy)
+            update_status(0, total_files, 1)
+
+            # Create destination directory if it doesn't exist
+            os.makedirs(dest, exist_ok=True)
+
+            # Copy each file, following symlinks like shutil.copytree does
+            for i, src_file in enumerate(files_to_copy):
+                rel_path = src_file.relative_to(source_path)
+                dest_file = os.path.join(dest, rel_path)
+
+                # Create parent directories if needed
+                os.makedirs(os.path.dirname(dest_file), exist_ok=True)
+
+                try:
+                    shutil.copy2(src_file, dest_file, follow_symlinks=True)
+                except Exception as e:
+                    log(f"Failed to copy {src_file} to {dest_file}: {e}")
+
+                update_status(i + 1, total_files, 1)
+
+            # Reproduce empty directories, like shutil.copytree does
+            for dir_path in sorted(source_path.rglob("*")):
+                if dir_path.is_dir() and not dir_path.is_symlink():
+                    rel_dir = dir_path.relative_to(source_path)
+                    os.makedirs(os.path.join(dest, rel_dir), exist_ok=True)
+        except Exception as e:
+            errors.append(e)
+
+    sg.theme("systemdefault")
+
+    progress = sg.ProgressBar(100, orientation="h", s=(50, 10))
+    text = sg.Text("0% (0/?)", size=(20, 1))
+    extra = sg.Text("Scanning directory...")
+    layout = [[extra], [progress], [text]]
+    window = sg.Window(title, layout, finalize=True)
+    window.refresh()
+
+    window.perform_long_operation(copy_tree, "-COPY DONE-")
+
+    last_phase = 0
+    while True:
+        event, values = window.read(timeout=100)
+        if event == "-COPY DONE-":
+            break
+        elif event is None:
+            exit_with_message(
+                "Window Closed",
+                "The window was closed. Exiting...",
+                timeout=5,
+            )
+        else:
+            current, total, phase = status
+            if phase == 1 and total > 0:
+                # Only update the status text on the 0 -> 1 phase change
+                if phase != last_phase:
+                    extra.update("Copying files...")
+                    last_phase = phase
+                perc = int(100 * current / total)
+                text.update(f"{perc}% ({current}/{total} files)")
+                progress.update(perc)
+
+    window.close()
+
+    if errors:
+        exit_with_message(
+            "Copy Failed",
+            f"Failed to copy '{source}' to '{dest}': {errors[0]}",
+            ask_for_log=True,
+        )
+
+
+def is_flatpak() -> bool:
+    return "FLATPAK_ID" in os.environ or os.path.exists("/.flatpak-info")
+
+
+def flatpakrunner():
+    import subprocess
+    import time
+
+    cachedir = os.path.join(SCRIPT_PATH, ".cache")
+    os.makedirs(cachedir, exist_ok=True)
+
+    flatpakrunfile = os.path.join(cachedir, "insideflatpak.tmp")
+    errorfile = os.path.join(cachedir, "flatpakerror.tmp")
+    warnfile = os.path.join(cachedir, "flatpakwarn.tmp")
+
+    log(f"Looking for run-file '{flatpakrunfile}'")
+
+    save_conf_setting("FlatpakRunning", "new")
+
+    time.sleep(2)
+    if load_conf_setting("FlatpakRunning") != "true" and os.path.isfile(
+        flatpakrunfile
+    ):
+        os.remove(flatpakrunfile)
+
+    while not os.path.isfile(flatpakrunfile):
+        time.sleep(1)
+        print("Looking")
+    time.sleep(0.5)
+    flcmd = []
+    with open(flatpakrunfile, "r") as frf:
+        for line in frf:
+            flcmd.append(line.rstrip("\n"))
+    log(f"Running inside flatpak:\n\t{flcmd}")
+    try:
+        process = subprocess.run(flcmd, capture_output=True, text=True)
+    except Exception as e:
+        with open(errorfile, "w") as fef:
+            fef.write(str(e))
+    else:
+        print(str(process.stdout))
+        print(str(process.stderr))
+    try:
+        if os.getenv("SteamCompatDataPath") == None:
+            wserver = subprocess.run(
+                ["flatpak-spawn", "--host", "wineserver", "--wait"],
+                bufsize=1,
+                capture_output=True,
+                text=True,
+            )
+            print(str(wserver.stdout))
+            print(str(wserver.stderr))
+    except Exception as e:
+        with open(warnfile, "w") as fwf:
+            fwf.write(str(e))
+    if os.path.isfile(flatpakrunfile):
+        os.remove(flatpakrunfile)
+
+
+def create_symlink(
+    src: Union[str, pathlib.Path],
+    dst: Union[str, pathlib.Path],
+    replace: Optional[bool] = None,
+) -> None:
+    # Needs src, dest;  replace can be True (replace all), None (replace only files and symlinks) or False (don't replace anything)
+    src_path = pathlib.Path(src)
+    dst_path = pathlib.Path(dst)
+
+    # Resolve source relative to destination parent
+    # because relative symlink targets are interpreted there
+    check_src = (dst_path.parent / src_path).resolve()
+
+    if not check_src.exists():
+        raise FileNotFoundError(f"Source does not exist: '{src_path}'")
+
+    # Destination does not exist -> create directly
+    if not dst_path.is_symlink():
+        src_path.symlink_to(dst_path)
+        return
+
+    # Existing symlink
+    if dst_path.is_symlink():
+        current = (dst_path.parent / os.readlink(dst_path)).resolve()
+
+        if current == check_src:
+            return
+
+        if replace is False:
+            raise OSError(
+                f"Symlink '{dst_path}' points to '{current}', expected '{check_src}'"
+            )
+
+        dst_path.unlink()
+        src_path.symlink_to(dst_path)
+        return
+
+    # Existing non-symlink
+    if not replace:
+        raise OSError(f"Path '{dst_path}' exists and is not a symlink")
+
+    if dst_path.is_dir() and not replace:
+        raise OSError(
+            f"Path '{dst_path}' exists and is not a file or symlink"
+        )
+        shutil.rmtree(dst_path)
+    elif dst_path().is_dir() and replace:
+        dst_path.unlink()
+
+        src_path.symlink_to(dst_path)
+        return
+
+    src_path.symlink_to(dst_path)

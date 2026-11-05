@@ -5,14 +5,9 @@
 Unofficial installer for running the **Wand** (formerly WeMod) Windows trainer app
 with Steam Proton games on **CachyOS / Arch Linux**.
 
-It installs [DeckCheatz/wemod-launcher](https://github.com/DeckCheatz/wemod-launcher),
-adds a small `wand` wrapper that fixes Steam launch options containing environment
-variables, patches a launcher bug in the dotnet48 download, and can set up a Steam
-game prefix for Wand.
-
-> This is a **gaming** project: it installs and configures a Windows game trainer
-> (Wand/WeMod) so it can be used alongside Steam Proton games. It is not a
-> general development tool or system utility.
+This project is **self-contained**: it packages the Wand launcher (Python source,
+virtual environment, wemod_data, and the `wand` wrapper) directly into the
+repository. No external clone or upstream dependency is required at install time.
 
 ## Quick Install
 
@@ -76,9 +71,9 @@ This:
 - Refuses to run if the downloaded prefix lacks the Wand marker or is incomplete.
 - Leaves the old prefix behind under `~/.local/share/Steam/steamapps/compatdata/` for rollback.
 
-The launcher itself has no game-specific code: it installs the same launcher for
-every game. `--game` only prepares the prefix so Wand can find and launch the
-chosen game.
+The launcher itself is game-agnostic: it installs the same launcher for every
+game. `--game` only prepares the prefix so Wand can find and launch the chosen
+game.
 
 ## Troubleshooting
 
@@ -117,7 +112,7 @@ Wand opens but the game is missing
 
 ## Running it for anyone (global installer)
 
-This repository is now a **global, per-user installer**:
+This repository is a **global, per-user installer**:
 
 - Files install into `~/.local/share/wand-launcher`, so one checkout works for
   every user that logs into the machine. No `sudo`, no system-wide files, no
@@ -131,7 +126,7 @@ This repository is now a **global, per-user installer**:
 Wand stores its user data in a single place, so a shared folder can expose it to
 the whole machine:
 
-- **Windows (Z:\\\)**: `Z:\home\<user>\.local\share\wand\data`
+- **Windows (Z:\\)**: `Z:\home\<user>\.local\share\wand\data`
 - **Linux**: `~/.local/share/wand/data`
 
 From the Linux box (adjust `<user>` to the account that runs the game):

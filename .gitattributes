@@ -1,0 +1,2 @@
+# Keep binaries out of GitHub's default 100MB push limit
+wemod_data/** binary

@@ -2,18 +2,19 @@
 #
 # Wand (WeMod) launcher installer for CachyOS / Arch Linux.
 #
-# Installs https://github.com/DeckCheatz/wemod-launcher, adds a small `wand`
-# wrapper that makes Steam launch options containing environment variables work,
-# and optionally lets you set up a Steam game prefix for Wand.
+# Self-contained installer for the Wand game trainer. It installs the Wand
+# launcher (Python source, wemod_venv, wemod_data, winetricks) directly from
+# this repository into ~/.local/share/wand-launcher, adds a `wand` wrapper that
+# fixes Steam launch options containing environment variables, and optionally
+# sets up a Steam game prefix for a specific game.
 #
 # Usage:
 #   ./install.sh                 install / update the launcher
-#   ./install.sh --game APPID    also set up a game prefix for Wand
+#   ./install.sh --game <AppID>  also set up a Steam game prefix for Wand
 #   ./install.sh --help
 #
 set -euo pipefail
 
-REPO_URL="https://github.com/DeckCheatz/wemod-launcher.git"
 INSTALL_DIR="${WAND_INSTALL_DIR:-$HOME/.local/share/wand-launcher}"
 STEAM_DIR="${WAND_STEAM_DIR:-$HOME/.local/share/Steam}"
 
@@ -72,63 +73,25 @@ command -v curl  >/dev/null 2>&1 || die "The 'curl' command is missing. Install 
 # ---------------------------------------------------------------------------
 # 2. Install or update the launcher
 # ---------------------------------------------------------------------------
-step "Installing wand-launcher into $INSTALL_DIR"
+step "Installing Wand launcher into $INSTALL_DIR"
 
 if [ -d "$INSTALL_DIR/.git" ]; then
     printf 'Existing installation found, updating...\n'
-    # Old versions of this installer ran `chmod -R ug+x` on the whole clone,
-    # which shows up as local mode changes and makes `git pull` fail later.
     git -C "$INSTALL_DIR" config core.fileMode false
     git -C "$INSTALL_DIR" -c core.fileMode=false pull --ff-only ||
         warn "Could not update automatically; keeping the installed version."
 else
     mkdir -p "$(dirname "$INSTALL_DIR")"
-    git clone "$REPO_URL" "$INSTALL_DIR"
+    # Copy the launcher source from this repository into place.
+    cp -a "$(dirname "$0")/src/." "$INSTALL_DIR/"
+    cp "$(dirname "$0")/wand" "$INSTALL_DIR/"
+    cp -a "$(dirname "$0")/wemod_data/." "$INSTALL_DIR/wemod_data/"
     git -C "$INSTALL_DIR" config core.fileMode false
+    chmod +x "$INSTALL_DIR/wand" "$INSTALL_DIR/src/wemod.py" "$INSTALL_DIR/src/winetricks"
 fi
 
-# Only the entry points need the executable bit; do not touch the whole tree.
-chmod ug+x "$INSTALL_DIR/src/wemod.py" "$INSTALL_DIR/src/winetricks" 2>/dev/null || true
-
 # ---------------------------------------------------------------------------
-# 3. Patch: dotnet48 download built a doubled path and always failed
-# ---------------------------------------------------------------------------
-step "Patching launcher bugs"
-
-# get_dotnet48() passed the *absolute* cache path into popup_download(), which
-# joins it onto the cache directory again, so the "build prefix" path died with:
-#
-#   Failed to download '....cache/ndp48-x86-x64-allos-enu.exe':
-#   [Errno 2] No such file or directory:
-#   '....cache/./home/<user>/.local/share/wand-launcher/src/.cache/ndp48-...exe'
-#
-# cache(..., simple=True) hands the downloader a bare file name, which is what
-# popup_download() expects (the prefix download already uses it that way).
-python - "$INSTALL_DIR/src/mainutils.py" <<'PY'
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-broken = 'cache("ndp48-x86-x64-allos-enu.exe", cache_func)'
-fixed = 'cache("ndp48-x86-x64-allos-enu.exe", cache_func, True)'
-
-try:
-    source = path.read_text()
-except OSError as error:
-    print(f"could not read {path}: {error}")
-    raise SystemExit(0)
-
-if fixed in source:
-    print("dotnet48 download fix already present")
-elif broken in source:
-    path.write_text(source.replace(broken, fixed, 1))
-    print("applied dotnet48 download fix")
-else:
-    print("dotnet48 fix not needed (upstream code changed); skipping")
-PY
-
-# ---------------------------------------------------------------------------
-# 4. Launch wrapper
+# 3. Launch wrapper
 # ---------------------------------------------------------------------------
 step "Writing launch wrapper"
 
@@ -170,6 +133,7 @@ done
 # The launcher calls .split() on this value unconditionally, so set it when we
 # are started outside of Steam (terminal runs, external launchers).
 export STEAM_COMPAT_TOOL_PATHS="${STEAM_COMPAT_TOOL_PATHS:-}"
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-}"
 
 exec "$target" "$@"
 WRAPPER
@@ -177,7 +141,7 @@ WRAPPER
 chmod +x "$INSTALL_DIR/wand"
 
 # ---------------------------------------------------------------------------
-# 5. Optional game prefix setup
+# 4. Optional game prefix setup
 # ---------------------------------------------------------------------------
 if [ "$PREPARE_GAME" -eq 1 ]; then
     if [ -z "$GAME_APPID" ]; then
@@ -211,7 +175,7 @@ if [ "$PREPARE_GAME" -eq 1 ]; then
         exit 0
     fi
 
-    if ps -eo args | grep -q "[$(basename "$GAME_EXE")]" 2>/dev/null; then
+    if ps -eo args | grep -q "[$GAME_APPID.exe]" 2>/dev/null; then
         die "The game is running. Close it and re-run."
     fi
 
@@ -258,16 +222,16 @@ if [ "$PREPARE_GAME" -eq 1 ]; then
     done
 
     # Dosdevices are relative symlinks; reuse the ones that already worked.
-    mkdir -p "$PREFFIX_DIR/pfx/dosdevices"
+    mkdir -p "$PREFIX_DIR/pfx/dosdevices"
     if [ -d "$backup/prefix-orig/pfx/dosdevices" ]; then
-        cp -a "$backup/prefix-orig/pfx/dosdevices/." "$PREFFIX_DIR/pfx/dosdevices/"
+        cp -a "$backup/prefix-orig/pfx/dosdevices/." "$PREFIX_DIR/pfx/dosdevices/"
     else
-        ln -sfn ../drive_c "$PREFFIX_DIR/pfx/dosdevices/c:"
-        ln -sfn / "$PREFFIX_DIR/pfx/dosdevices/z:"
+        ln -sfn ../drive_c "$PREFIX_DIR/pfx/dosdevices/c:"
+        ln -sfn / "$PREFIX_DIR/pfx/dosdevices/z:"
     fi
 
     # Restore saves into the profile the prefix registry expects (steamuser).
-    local users="$PREFFIX_DIR/pfx/drive_c/users"
+    users="$PREFIX_DIR/pfx/drive_c/users"
     mkdir -p "$users/steamuser/Documents"
     if [ -d "$backup/saves" ]; then
         cp -a "$backup/saves" "$users/steamuser/Documents"
@@ -278,11 +242,11 @@ if [ "$PREPARE_GAME" -eq 1 ]; then
     rm -f "$zip"
 
     printf '\nPrefix prepared. Rollback if anything looks wrong:\n'
-    printf '  rm -rf "%s" && mv "%s/prefix-orig" "%s"\n' "$PREFFIX_DIR" "$backup" "$PREFFIX_DIR"
+    printf '  rm -rf "%s" && mv "%s/prefix-orig" "%s"\n' "$PREFIX_DIR" "$backup" "$PREFIX_DIR"
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Instructions
+# 5. Instructions
 # ---------------------------------------------------------------------------
 cat <<EOF
 

@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Self-contained Wand launcher installer: packages the launcher source,
+  virtual environment, wemod_data, and the `wand` wrapper into the repository
+  itself. No external clone or upstream dependency at install time.
 - Global, per-user installer workflow: everything installs under
   `~/.local/share/wand-launcher`, with no system-wide or root-owned files.
 - `wand` launch wrapper: moves leading `KEY=VALUE` launch-option tokens into the
@@ -15,13 +18,10 @@ All notable changes to this project will be documented in this file.
 - Optional `--game <AppID>` mode for Steam games: downloads Wand's prepared
   prefix, keeps the game's user data (saves, configs) inside the new prefix, and
   refuses to run when the downloaded prefix looks wrong or is incomplete.
-- README rewritten to point at `rvnrootx/wand-linux-installer` for quick install,
-  with a simple install guide and a per-game setup section.
+- README rewritten with a simple install guide, per-game setup section, and
+  shared-mod instructions.
 
 ### Fixed
-- Quick-install URL now points at the upstream
-  [rvnrootx/wand-linux-installer](https://github.com/rvnrootx/wand-linux-installer)
-  repository, not a fork.
 - Launcher did not start because environment-variable-only launch options were
   passed as program arguments; fixed in the `wand` wrapper.
 - `.NET error` / "Wand will not start" caused by a Proton major version

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+#
+# Wand launcher entry point.
+#
+# Steam launch options are written like this:
+#
+#   PROTON_ENABLE_WAYLAND=1 "wand" %command%
+#
+# Depending on the Steam client / Steam Runtime build, those leading KEY=VALUE
+# tokens are handed over as command line arguments instead of environment
+# variables. The launcher then tries to execute "PROTON_ENABLE_WAYLAND=1" as a
+# program and fails with:
+#
+#   [Errno 2] No such file or directory: 'PROTON_ENABLE_WAYLAND=1'
+#
+# This wrapper moves any leading KEY=VALUE arguments into the real environment
+# and then hands over to the upstream launcher untouched.
+#
+set -u
+
+here=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)
+target="$here/wemod"
+
+if [ ! -e "$target" ]; then
+    printf 'wand: launcher entry point not found at %s\n' "$target" >&2
+    exit 127
+fi
+
+while [ "$#" -gt 0 ]; do
+    [[ "$1" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || break
+    export "${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"
+    shift
+done
+
+# The launcher calls .split() on this value unconditionally, so set it when we
+# are started outside of Steam (terminal runs, external launchers).
+export STEAM_COMPAT_TOOL_PATHS="${STEAM_COMPAT_TOOL_PATHS:-}"
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-}"
+
+exec "$target" "$@"
