@@ -12,13 +12,11 @@ All notable changes to this project will be documented in this file.
   `[Errno 2] No such file or directory` crash.
 - Patched the launcher's `dotnet48` download bug (absolute cache path was joined
   again by `popup_download()`).
-- New `--prepare-hfw` mode for Horizon Forbidden West Complete Edition
-  (Steam AppID 2420110): downloads Wand's prepared prefix, keeps the existing
-  game prefix and saves for rollback, and refuses to run when the download looks
-  wrong.
+- Optional `--game <AppID>` mode for Steam games: downloads Wand's prepared
+  prefix, keeps the game's user data (saves, configs) inside the new prefix, and
+  refuses to run when the downloaded prefix looks wrong or is incomplete.
 - README rewritten to point at `rvnrootx/wand-linux-installer` for quick install,
-  with the full HFW setup workflow, troubleshooting guide, and shared-mod
-  instructions.
+  with a simple install guide and a per-game setup section.
 
 ### Fixed
 - Quick-install URL now points at the upstream
@@ -27,7 +25,7 @@ All notable changes to this project will be documented in this file.
 - Launcher did not start because environment-variable-only launch options were
   passed as program arguments; fixed in the `wand` wrapper.
 - `.NET error` / "Wand will not start" caused by a Proton major version
-  mismatch; now documented and addressable with `--prepare-hfw` or
+  mismatch; now documented and addressable with a prepared prefix or
   `GE-Proton10-*`.
 
 ## [1.0.0] - 2026-11-05
