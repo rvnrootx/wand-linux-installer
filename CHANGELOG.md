@@ -18,12 +18,21 @@ All notable changes to this project will be documented in this file.
 - Optional `--game <AppID>` mode for Steam games: downloads Wand's prepared
   prefix, keeps the game's user data (saves, configs) inside the new prefix, and
   refuses to run when the downloaded prefix looks wrong or is incomplete.
-- README rewritten with a simple install guide, per-game setup section, and
-  shared-mod instructions.
+- `--uninstall` mode: removes the launcher, its virtual environment,
+  `wemod_data`, the download cache and the `wand` wrapper, asking for
+  confirmation first (`--yes` skips it). `--uninstall --game <AppID>` also
+  clears Wand's marker from that game's prefix. Game prefixes, saves and
+  `--game` backups are kept.
+- README rewritten with a simple install guide, per-game setup section, uninstall
+  instructions and shared-mod instructions.
 
 ### Fixed
 - Launcher did not start because environment-variable-only launch options were
   passed as program arguments; fixed in the `wand` wrapper.
+- The launcher's `dotnet48` download URL was truncated (missing `exe`), so the
+  request always returned HTTP 400: the prefix build could never complete, no
+  `.wemod_installer` marker was written, and every launch restarted the whole
+  install behind a stuck download window. The URL is now corrected.
 - `.NET error` / "Wand will not start" caused by a Proton major version
   mismatch; now documented and addressable with a prepared prefix or
   `GE-Proton10-*`.

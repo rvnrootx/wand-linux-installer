@@ -75,14 +75,39 @@ The launcher itself is game-agnostic: it installs the same launcher for every
 game. `--game` only prepares the prefix so Wand can find and launch the chosen
 game.
 
+## Uninstall
+
+```bash
+./install.sh --uninstall
+```
+
+Removes `~/.local/share/wand-launcher`: the launcher source, its virtual
+environment, `wemod_data` (including your Wand login and downloaded trainer
+data), the download cache and the `wand` wrapper. It asks for confirmation first;
+`--yes` skips the prompt (required when the script is piped into `bash`, where
+there is no terminal to ask on).
+
+To also clear Wand's marker from a game's prefix, so the launcher treats that
+prefix as unprepared again:
+
+```bash
+./install.sh --uninstall --game 2420110
+```
+
+Game prefixes, your saves and any `~/wand-gamepfx-backup-*` folders from `--game`
+are never deleted. Afterwards remove the wrapper from the game's Steam launch
+options.
+
 ## Troubleshooting
 
-`Download Failed ... ndp48-x86-x64-allos-enu.exe ... No such file or directory`
-: An upstream bug where `get_dotnet48()` passed an absolute path into
-  `popup_download()`, producing `.../.cache/./home/<you>/.cache/ndp48-...exe`.
-  This installer patches `src/mainutils.py` to pass a bare file name. Re-run
-  `./install.sh` after any launcher update, because the launcher's self-update
-  runs `git reset --hard`.
+`Download Failed ... ndp48-x86-x64-allos-enu.exe`
+: The launcher's `get_dotnet48()` link was truncated (`...allos-enu.` instead of
+  `...allos-enu.exe`), so the download always failed with HTTP 400. The prefix
+  build then never finished, no `.wemod_installer` marker was written, and every
+  launch started the whole dependency install again — Wand sat behind its
+  download window and never got usable. This repository ships the corrected
+  URL. Re-run `./install.sh` after any launcher update, because the launcher's
+  self-update runs `git reset --hard` and restores the broken link.
 
 `[Errno 2] No such file or directory: 'SOME_VAR=...'`
 : The game was started through the bundled `wemod` entry point instead of the

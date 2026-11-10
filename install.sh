@@ -11,6 +11,9 @@
 # Usage:
 #   ./install.sh                 install / update the launcher
 #   ./install.sh --game <AppID>  also set up a Steam game prefix for Wand
+#   ./install.sh --uninstall     remove the launcher again (game saves are kept)
+#   ./install.sh --uninstall --game <AppID>
+#                                also clear Wand's marker from that game prefix
 #   ./install.sh --help
 #
 set -euo pipefail
@@ -19,19 +22,42 @@ INSTALL_DIR="${WAND_INSTALL_DIR:-$HOME/.local/share/wand-launcher}"
 STEAM_DIR="${WAND_STEAM_DIR:-$HOME/.local/share/Steam}"
 
 PREPARE_GAME=0
+UNINSTALL=0
+ASSUME_YES=0
 GAME_APPID=""
 
+# Set when the previous argument was a flag that takes the next one as value.
+expect_value=0
+
 for arg in "$@"; do
+    if [ "$expect_value" -eq 1 ]; then
+        expect_value=0
+        case "$arg" in
+            -*) ;; # a flag, not a value: let it be parsed below
+            *)
+                GAME_APPID="$arg"
+                continue
+                ;;
+        esac
+    fi
+
     case "$arg" in
         --game)
             PREPARE_GAME=1
+            expect_value=1
             ;;
         --game=*)
             PREPARE_GAME=1
             GAME_APPID="${arg#*=}"
             ;;
+        --uninstall)
+            UNINSTALL=1
+            ;;
+        --yes | -y)
+            ASSUME_YES=1
+            ;;
         --help | -h)
-            sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,/^[^#]/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -44,6 +70,92 @@ done
 step() { printf '\n==> %s\n' "$*"; }
 warn() { printf '!!! %s\n' "$*" >&2; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# 0. Uninstall (runs before the dependency checks: removing needs none of them)
+# ---------------------------------------------------------------------------
+if [ "$UNINSTALL" -eq 1 ]; then
+    marker=""
+    if [ -n "$GAME_APPID" ]; then
+        marker="$STEAM_DIR/steamapps/compatdata/$GAME_APPID/pfx/.wemod_installer"
+    elif [ "$PREPARE_GAME" -eq 1 ]; then
+        die "--uninstall --game requires a Steam AppID (for example: --uninstall --game 2420110)"
+    fi
+
+    if ps -eo args= | grep -qE "[W]eMod\.exe|wand-launcher/(src/)?wemod\.py|wand-launcher/wand( |$)"; then
+        die "Wand is still running. Close the game and Wand, then re-run."
+    fi
+
+    if [ ! -d "$INSTALL_DIR" ] && { [ -z "$marker" ] || [ ! -e "$marker" ]; }; then
+        printf 'Nothing to remove: %s does not exist.\n' "$INSTALL_DIR"
+        exit 0
+    fi
+
+    step "Uninstalling Wand launcher"
+
+    if [ -d "$INSTALL_DIR" ]; then
+        printf 'This removes:\n'
+        printf '  %s\n' "$INSTALL_DIR"
+        printf '  launcher source, wemod_venv, wemod_data (with your Wand login and\n'
+        printf '  downloaded trainer data), the download cache and the wand wrapper.\n'
+    fi
+    if [ -n "$marker" ] && [ -e "$marker" ]; then
+        printf 'This also clears Wand marker from the game prefix for AppID %s.\n' "$GAME_APPID"
+    fi
+    printf '\nKept: game prefixes, your saves, and any ~/wand-gamepfx-backup-* folders.\n'
+
+    if [ "$ASSUME_YES" -eq 0 ]; then
+        # Ask on the terminal: when this script is piped into bash, stdin is the
+        # script itself and must not be read here. A readable /dev/tty is not
+        # enough (it exists but cannot be opened without a controlling tty), so
+        # try to open it for real.
+        if { exec 3<>/dev/tty; } 2>/dev/null; then
+            printf '\nContinue? [y/N] ' >&3
+            read -r answer <&3 || answer=""
+            exec 3>&-
+            case "$answer" in
+                [yY] | [yY][eE][sS]) ;;
+                *)
+                    printf 'Aborted. Nothing was removed.\n'
+                    exit 0
+                    ;;
+            esac
+        else
+            die "Refusing to uninstall without confirmation (no terminal). Re-run with --yes."
+        fi
+    fi
+
+    if [ -n "$marker" ] && [ -e "$marker" ]; then
+        rm -f "$marker"
+        printf 'Cleared Wand marker from the AppID %s prefix.\n' "$GAME_APPID"
+    fi
+
+    if [ -d "$INSTALL_DIR" ]; then
+        rm -rf "$INSTALL_DIR"
+        printf 'Removed %s\n' "$INSTALL_DIR"
+    fi
+
+    cat <<EOF
+
+==============================================
+ Wand uninstalled
+==============================================
+
+Remaining manual step:
+
+ Remove the launch option from the game in Steam
+ (Properties -> Launch Options), so it starts normally again.
+
+Game prefixes and saves were not touched; they simply no longer carry Wand's
+marker. To restore a prefix that --game replaced, use its backup:
+
+  ls ~/wand-gamepfx-backup-*
+  rm -rf "$STEAM_DIR/steamapps/compatdata/<AppID>" &&
+    mv ~/wand-gamepfx-backup-<timestamp>/prefix-orig "$STEAM_DIR/steamapps/compatdata/<AppID>"
+
+EOF
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Dependencies
@@ -276,5 +388,8 @@ Notes:
    dotnet48 download fix, which an upstream `git reset --hard` removes).
  - To set up a different game prefix, run this again with:
    ./install.sh --game <AppID>
+ - To remove the launcher again:
+   ./install.sh --uninstall
+   (add --game <AppID> to also clear Wand's marker from that game's prefix)
 
 EOF
