@@ -4,14 +4,14 @@
 #
 # Steam launch options are written like this:
 #
-#   PROTON_ENABLE_WAYLAND=1 "wand" %command%
+#   VKD3D_DISABLE_EXTENSIONS=VK_KHR_maintenance8 "wand" %command%
 #
 # Depending on the Steam client / Steam Runtime build, those leading KEY=VALUE
 # tokens are handed over as command line arguments instead of environment
-# variables. The launcher then tries to execute "PROTON_ENABLE_WAYLAND=1" as a
+# variables. The launcher then tries to execute the assignment itself as a
 # program and fails with:
 #
-#   [Errno 2] No such file or directory: 'PROTON_ENABLE_WAYLAND=1'
+#   [Errno 2] No such file or directory: 'VKD3D_DISABLE_EXTENSIONS=...'
 #
 # This wrapper moves any leading KEY=VALUE arguments into the real environment
 # and then hands over to the upstream launcher untouched.
@@ -36,5 +36,20 @@ done
 # are started outside of Steam (terminal runs, external launchers).
 export STEAM_COMPAT_TOOL_PATHS="${STEAM_COMPAT_TOOL_PATHS:-}"
 export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-}"
+
+# Wand is an Electron app, and it does not draw a window when Proton runs it
+# through Wayland: the process starts, its tray icon shows up, and nothing else
+# ever appears, so it looks like the trainer failed to launch. XWayland renders
+# it correctly. Everything else (the game itself) keeps working on XWayland too.
+# To keep Wayland for the game, add WAND_ALLOW_WAYLAND=1 to the launch options.
+if [ "${WAND_ALLOW_WAYLAND:-0}" != "1" ]; then
+    export PROTON_ENABLE_WAYLAND=0
+fi
+
+# A Wand that crashed, or was closed to the tray, keeps Electron's
+# single-instance lock. Every later launch is then handed to that dead window
+# and you get the same "only a tray icon" result. Clear a leftover instance of
+# a previous run before starting a new one.
+pkill -f 'wemod_bin.*WeMod\.exe' 2>/dev/null || true
 
 exec "$target" "$@"
