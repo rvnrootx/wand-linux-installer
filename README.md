@@ -37,8 +37,14 @@ $HOME/.local/share/wand-launcher/wand %command%
 Environment variables go **in front** of the wrapper:
 
 ```text
-PROTON_ENABLE_WAYLAND=1 $HOME/.local/share/wand-launcher/wand %command%
+VKD3D_DISABLE_EXTENSIONS=VK_KHR_maintenance8 $HOME/.local/share/wand-launcher/wand %command%
 ```
+
+> Do **not** put `PROTON_ENABLE_WAYLAND=1` in the launch options. Wand is an
+> Electron app and draws no window when Proton runs it through Wayland: it starts,
+> its tray icon appears, and nothing else happens. The `wand` wrapper forces the
+> X11 path so the window shows up; add `WAND_ALLOW_WAYLAND=1` only if you accept a
+> missing Wand window in exchange for Wayland in the game.
 
 Then launch the game normally through Steam.
 
@@ -117,6 +123,14 @@ options.
 `'NoneType' object has no attribute 'split'`
 : Same cause: the launcher was started outside Steam without
   `STEAM_COMPAT_TOOL_PATHS`. The `wand` wrapper sets it.
+
+Wand opens but there is only a wand icon, no window
+: A failed or tray-hidden Wand keeps Electron's single-instance lock, so every
+  later launch is handed to that dead window. The wrapper clears a leftover
+  `WeMod.exe` before starting. If it still happens, close the game and run
+  `pkill -f 'wemod_bin.*WeMod.exe'`, then launch again. The other cause is
+  `PROTON_ENABLE_WAYLAND=1` in the launch options (see [Steam Setup](#steam-setup)):
+  remove it, or set `PROTON_ENABLE_WAYLAND=0` in front of the wrapper.
 
 `.NET error` inside Wand
 : Proton/prefix mismatch, usually from letting the launcher *build* a prefix on a

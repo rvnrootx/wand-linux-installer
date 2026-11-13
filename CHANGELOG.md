@@ -27,6 +27,11 @@ All notable changes to this project will be documented in this file.
   instructions and shared-mod instructions.
 
 ### Fixed
+- Wand started but never showed a window (only its tray icon) when the launch
+  options forced `PROTON_ENABLE_WAYLAND=1`. The `wand` wrapper now forces the X11
+  path for Wand (`WAND_ALLOW_WAYLAND=1` opts back in) and clears a leftover Wand
+  instance that would otherwise take over the launch through Electron's
+  single-instance lock.
 - Launcher did not start because environment-variable-only launch options were
   passed as program arguments; fixed in the `wand` wrapper.
 - The launcher's `dotnet48` download URL was truncated (missing `exe`), so the
